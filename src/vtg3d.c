@@ -491,7 +491,13 @@ void __vtg_drawEntityMesh (uint8_t mode, Entity *entity) {
             float api = angle/PI;
 
 
+            __vtg_draw_color = (Color) {
+                .r = api * entity->mesh->materials[material_index].color.r,
+                .g = api * entity->mesh->materials[material_index].color.g,
+                .b = api * entity->mesh->materials[material_index].color.b
+            };
             // TODO: set actual materials, this is only for tests
+            /*
             if(material_index <= 0) {
                 __vtg_draw_color = (Color) {
                     .r = api * 255, .g = api * 255, .b = api * 255
@@ -502,6 +508,7 @@ void __vtg_drawEntityMesh (uint8_t mode, Entity *entity) {
                     .r = api * 255, .g = api * 100, .b = api * 100
                 };
             }
+            */
             
             // Fill triangle
             __vtg_fill_triangle(x0, y0, x1, y1, x2, y2, davg);

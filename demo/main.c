@@ -42,6 +42,7 @@ int main () {
     et->mesh = &testmodel;
 
     ruukku->mesh = &ruukkumodel;
+    
     vtg_startLoop(loop);
     return 0;
 }

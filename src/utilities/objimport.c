@@ -38,6 +38,13 @@ struct __tmp_obj {
     uint16_t materialoffsets[OBJIMPORT_MAX_MATERIALS]; // max materials
     int materialoffsetcount;
 
+    // Materials buffer
+    Material materials[32];
+    int materialcount;
+
+    // Material file name
+    char mtlfile[64];
+
 };
 
 
@@ -99,6 +106,10 @@ uint8_t obj_parse_line (char *line, struct __tmp_obj *obj) {
                 }
                 else if(strcmp(strbuf, "usemtl") == 0) {
                     state = 5; // change material
+                    continue;
+                }
+                else if(strcmp(strbuf, "mtllib") == 0) {
+                    state = 6; // Get mtl file name
                     continue;
                 }
                 else {
@@ -277,6 +288,117 @@ uint8_t obj_parse_line (char *line, struct __tmp_obj *obj) {
 
             break;
         }
+        else if(state == 6) {
+            if(!is_whitespace(c) && i < slen - 1) {
+                strbuf[strix++] = c;
+            }
+            else {
+                if(i < slen) {
+                    strbuf[strix++] = c;
+                }
+                strbuf[strix] = 0;
+                strcpy(obj->mtlfile, strbuf);
+#if DEBUGLEVEL > 1
+                printf("ADDED MTL FILE: [%s]\n", obj->mtlfile);
+#endif
+                return 0;
+            }
+        }
+    }
+
+    return 0;
+}
+
+uint8_t mtl_parse_line (char *line, struct __tmp_obj *obj) {
+    char strbuf[256] = { 0 };
+    int strix = 0;
+    size_t slen = strlen(line);
+
+    Color tmp_color = {
+        0, 0, 0
+    };
+
+    if(strlen(line) <= 0 || line[0] == '#') {
+        // Comment or empty row
+        return 1;
+    }
+
+    int state = 0;
+    for(int i = 0; i < slen; i++) {
+        char c = line[i];
+        if(state == 0) {
+            if(!is_whitespace(c)) {
+                strbuf[strix++] = c;
+            }
+            else {
+                strbuf[strix] = 0;
+                strix = 0;
+                if(strcmp(strbuf, "newmtl") == 0) {
+                    state = 1; // Create new material
+                    
+                    continue;
+                }
+                else if(strcmp(strbuf, "Kd") == 0) {
+                    state = 2; // Get diffuse color
+                    continue;
+                }
+                else {
+                    // Unknown command
+                    return 2;
+                }
+            }
+        }
+        else if(state == 1) {
+            // TODO maybe: Can a material's name have a space???
+            if(!is_whitespace(c) && i < slen - 1) {
+                strbuf[strix++] = c;
+            } 
+            else {
+                if(i < slen) {
+                    strbuf[strix++] = c;
+                }
+                strbuf[strix] = 0;
+                obj->materialcount++;
+                
+                strcpy(obj->materials[obj->materialcount].name, strbuf);
+#if DEBUGLEVEL > 1
+                printf("Added a material: %s %i\n", obj->materials[obj->materialcount].name, obj->materialcount);
+#endif
+
+            }
+        }
+        else if(state == 2) {
+            
+            for(int x = 0; x < 3; x++) {
+                do {
+                    c = line[i];
+                    strbuf[strix++] = c;
+                    i++;
+                } while (!is_whitespace(c) && i < slen);
+                strbuf[strix] = 0;
+                switch(x) {
+                    case 0:
+                    {
+                        tmp_color.r = (uint8_t)(atof(strbuf) * 255);
+                        break;
+                    }
+                    case 1:
+                    {
+                        tmp_color.g = (uint8_t)(atof(strbuf) * 255);
+                        break;
+                    }
+                    case 2:
+                    {
+                        tmp_color.b = (uint8_t)(atof(strbuf) * 255);
+                        break;
+                    }
+                }
+                strix = 0;
+            }
+            
+            obj->materials[obj->materialcount].color = tmp_color;
+            break;
+        }
     }
 
     return 0;
@@ -312,6 +434,9 @@ uint8_t objLoad (const char *path, Mesh *mesh) {
     temp_object.uvindexcount = 0;
 
     temp_object.materialoffsetcount = 0;
+    temp_object.materialcount = -1;
+    memset(temp_object.materials, 0, sizeof(Material) * 32);
+    temp_object.mtlfile[0] = 0; // terminate string at 0
 
     while((c = fgetc(f)) != EOF) {
         if(c != '\n') {
@@ -368,6 +493,37 @@ uint8_t objLoad (const char *path, Mesh *mesh) {
 
     fclose(f);
 
+    if(temp_object.mtlfile[0] != 0) {
+        // File found, parse path from .obj path...
+        char mtlpath[64];
+        strcpy(mtlpath, path);
+        int i = 0;
+        for(i = strlen(mtlpath) - 1; i > 0; i--) {
+            if(mtlpath[i] == '/') {
+                break;
+            }
+        }
+        strcpy(mtlpath + i + 1, temp_object.mtlfile);
+
+        f = fopen(mtlpath, "r");
+        if(f) {
+
+            while((c = fgetc(f)) != EOF) {
+                if(c != '\n') {
+                    strbuf[strln++] = c;
+                }
+                else {
+                    strbuf[strln] = 0;
+                    mtl_parse_line(strbuf, &temp_object); 
+                    strln = 0;
+                }
+            }
+
+            fclose(f);
+        }
+    }
+
+
     if(mesh != NULL) {
         mesh->verts = malloc(sizeof(Vector3) * temp_object.vertexcount);
         memcpy(mesh->verts, temp_object.vertices, sizeof(Vector3) * temp_object.vertexcount);
@@ -385,6 +541,9 @@ uint8_t objLoad (const char *path, Mesh *mesh) {
 
         memcpy(mesh->materialindex, temp_object.materialoffsets, sizeof(uint16_t) * temp_object.materialoffsetcount);
         mesh->materialindex[temp_object.materialoffsetcount] = 0xFFFF;
+
+        memcpy(mesh->materials, temp_object.materials, sizeof(Material) * (temp_object.materialcount + 1));
+
     }
 
     // Free temporary object

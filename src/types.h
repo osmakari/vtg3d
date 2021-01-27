@@ -31,6 +31,18 @@ struct __color {
 
 #define Color struct __color
 
+// Material
+struct __material {
+
+    // Material name
+    char name[64];
+
+    // Diffuse color
+    Color color;
+};
+
+#define Material struct __material
+
 // Mesh
 struct __mesh {
     
@@ -52,12 +64,16 @@ struct __mesh {
     // Normal indices
     uint16_t *normalindex;
 
-    // Material indices
+    // Material indices - stores the face index when to switch material
     uint16_t materialindex[32];
+
+    // Materials
+    Material materials[32];
 
 };
 
 #define Mesh struct __mesh
+
 
 
 #endif
