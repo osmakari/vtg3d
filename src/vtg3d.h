@@ -36,6 +36,13 @@ extern int _vtg_entity_count;
 // Entity array size
 extern int __vtg_entity_array_size;
 
+// Camera position
+extern Vector3 vtg_cameraPosition;
+
+// Camera rotation
+extern Vector3 vtg_cameraRotation;
+
+
 
 // FUNCTIONS
 

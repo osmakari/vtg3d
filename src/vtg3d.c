@@ -3,6 +3,7 @@
 #include "vtgutil.h"
 #include <stdlib.h>
 #include <stdio.h>
+#include "utilities/objimport.h"
 
 uint16_t VTG_SCREEN_WIDTH = 1280;
 uint16_t VTG_SCREEN_HEIGHT = 720;
@@ -37,6 +38,10 @@ Color _vtg_background_color;
 // Entity array
 Entity **_vtg_entities;
 
+Vector3 vtg_cameraPosition;
+
+Vector3 vtg_cameraRotation;
+
 
 Color __vtg_draw_color = {
     255, 255, 255, 255
@@ -63,6 +68,9 @@ uint8_t vtg_initWindow (const char *title) {
     }
     _vtg_entities = malloc(sizeof(Entity) * __vtg_entity_array_size);
     memset(_vtg_entities, 0, sizeof(Entity) * __vtg_entity_array_size);
+
+    // Clear mesh array
+    memset(loaded_meshes, 0, 256);
 
     // Create windows
     _vtg_window = SDL_CreateWindow(title, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, VTG_SCREEN_WIDTH, VTG_SCREEN_HEIGHT, 0);
@@ -97,8 +105,9 @@ uint8_t vtg_initWindow (const char *title) {
 // function protos for loop
 void __vtg_drawEntityMesh (uint8_t mode, Entity *entity);
 void __vtg_draw_line (int x0, int y0, int x1, int y1, float depth);
+void __vtg_draw_line_hz (int x0, int x1, int y0, float depth);
 
-void __vtg_set_pixel_zb (uint16_t x, uint16_t y, float depth);
+void __vtg_set_pixel_zb (int x, int y, float depth);
 
 
 uint8_t vtg_startLoop (void (*callback)(SDL_Event *ev, int eventcount)) {
@@ -188,6 +197,10 @@ uint8_t vtg_startLoop (void (*callback)(SDL_Event *ev, int eventcount)) {
         vtg_destroyEntity(_vtg_entities[a]);
     }
 
+    for(int i = 0; i < 256; i++) {
+        objUnload(loaded_meshes[i]);
+    }
+
     SDL_DestroyTexture(_vtg_texture);
     SDL_DestroyRenderer(_vtg_renderer);
     SDL_DestroyWindow(_vtg_window);
@@ -208,24 +221,28 @@ void __vtg_set_render_color (uint8_t r, uint8_t g, uint8_t b) {
 }
 
 // Sets a pixel and z buffer
-void __vtg_set_pixel_zb (uint16_t x, uint16_t y, float depth) {
-    if(x >= VTG_SCREEN_WIDTH || y >= VTG_SCREEN_HEIGHT)
+void __vtg_set_pixel_zb (int x, int y, float depth) {
+    
+    if(x >= VTG_SCREEN_WIDTH || y >= VTG_SCREEN_HEIGHT || x < 0 || y < 0)
         return;
 
     int SW_BYTES = VTG_SCREEN_WIDTH * 4;
     int x4 = x * 4;
-    if(*(uint16_t*)&_vtg_zbuffer[y * VTG_SCREEN_WIDTH + x] >= (int)(depth/100 * 0xFFFF)) {
-        *(uint16_t*)&_vtg_zbuffer[y * VTG_SCREEN_WIDTH + x] = (int)(depth/100 * 0xFFFF);
-        _vtg_pixels[y * SW_BYTES + x4] = __vtg_draw_color.b;
-        _vtg_pixels[y * SW_BYTES + x4 + 1] = __vtg_draw_color.g;
-        _vtg_pixels[y * SW_BYTES + x4 + 2] = __vtg_draw_color.r;
-        _vtg_pixels[y * SW_BYTES + x4 + 3] = 255;
+    int dpth = (int)(depth/100 * 0xFFFF);
+    uint16_t *zb_addr = &_vtg_zbuffer[y * VTG_SCREEN_WIDTH + x];
+    uint8_t *col_addr = &_vtg_pixels[y * SW_BYTES + x4];
+    if(*zb_addr >= dpth) {
+        *zb_addr= dpth;
+        *col_addr = __vtg_draw_color.b;
+        *(col_addr + 1) = __vtg_draw_color.g;
+        *(col_addr + 2) = __vtg_draw_color.r;
+        *(col_addr + 3) = 255;
     }
     
 }
 
-void __vtg_clear_pixel (uint16_t x, uint16_t y) {
-    if(x >= VTG_SCREEN_WIDTH || y >= VTG_SCREEN_HEIGHT)
+void __vtg_clear_pixel (int x, int y) {
+    if(x >= VTG_SCREEN_WIDTH || y >= VTG_SCREEN_HEIGHT || x < 0 || y < 0)
         return;
 
     int SW_BYTES = VTG_SCREEN_WIDTH * 4;
@@ -235,6 +252,9 @@ void __vtg_clear_pixel (uint16_t x, uint16_t y) {
 
 // Transforms world coordinates to screen coordinates -- TODO: add interpolation for z-buffer
 int __vtg_worldToScreen (Vector3 *position, int *screenx, int *screeny) {
+    if(position->z <= 0)
+       return 1;
+
     int xp = 0;
     int yp = 0;
 
@@ -250,12 +270,15 @@ int __vtg_worldToScreen (Vector3 *position, int *screenx, int *screeny) {
     if(xp < 0 || xp >= VTG_SCREEN_WIDTH || yp < 0 || yp >= VTG_SCREEN_HEIGHT)
         return 1;
 
+
+
     return 0;
 }
 
 // Fills a bottom flat triangle
-void __vtg_fill_tri_bottom (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, float depth) {
-
+void __vtg_fill_tri_bottom (int x0, int y0, int x1, int y1, int x2, int y2, float depth) {
+    if(y1 - y0 == 0 || y2 - y0 == 0)
+        return;
 
     float invslope1 = (float)(x1 - x0) / (float)(y1 - y0);
     float invslope2 = (float)(x2 - x0) / (float)(y2 - y0);
@@ -264,14 +287,17 @@ void __vtg_fill_tri_bottom (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, 
     float curx2 = x0;
 
     for (int scanlineY = y0; scanlineY <= y1; scanlineY++) {
-        __vtg_draw_line ((int)curx1, scanlineY, (int)curx2, scanlineY, depth);
+        __vtg_draw_line_hz ((int)curx1, (int)curx2, scanlineY, depth);
         curx1 += invslope1;
         curx2 += invslope2;
     }
 }
 
 // Fills a top flat triangle
-void __vtg_fill_tri_top (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, float depth) {
+void __vtg_fill_tri_top (int x0, int y0, int x1, int y1, int x2, int y2, float depth) {
+
+    if(y2 - y0 == 0 || y2 - y1 == 0)
+        return;
 
     float invslope1 = (float)(x2 - x0) / (float)(y2 - y0);
     float invslope2 = (float)(x2 - x1) / (float)(y2 - y1);
@@ -281,7 +307,7 @@ void __vtg_fill_tri_top (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uin
 
     for (int scanlineY = y2; scanlineY > y0; scanlineY--)
     {
-        __vtg_draw_line ((int)curx1, scanlineY, (int)curx2, scanlineY, depth);
+        __vtg_draw_line_hz ((int)curx1, (int)curx2, scanlineY, depth);
         
         curx1 -= invslope1;
         curx2 -= invslope2;
@@ -289,7 +315,7 @@ void __vtg_fill_tri_top (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uin
 }
 
 // Fills a triangle
-void __vtg_fill_triangle (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, float depth) {
+void __vtg_fill_triangle (int x0, int y0, int x1, int y1, int x2, int y2, float depth) {
     int rx0 = x0, ry0 = y0, rx1 = x1, ry1 = y1, rx2 = x2, ry2 = y2;
 
     if(ry0 > ry1) {
@@ -321,6 +347,8 @@ void __vtg_fill_triangle (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, ui
         __vtg_fill_tri_top (rx0, ry0, rx1, ry1, rx2, ry2, depth);
     }
     else {
+        if(ry2 - ry0 == 0)
+            return;
         int rx3 = (int)(rx0 + ((float)(ry1 - ry0) / (float)(ry2 - ry0)) * (rx2 - rx0));
         int ry3 = ry1;
         __vtg_fill_tri_bottom (rx0, ry0, rx1, ry1, rx3, ry3, depth);
@@ -333,17 +361,23 @@ void __vtg_fill_triangle (uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1, ui
 void __vtg_draw_line (int x0, int y0, int x1, int y1, float depth) {
     if(y0 == y1) {
         // HZ line
+        if(y0 < 0 || y0 >= VTG_SCREEN_HEIGHT)
+            return;
         int d = x1 - x0;
         if(d < 0) {
             for(int i = 0; i > d - 1; i--) {
-                __vtg_set_pixel_zb(x0 + i, y0, depth);
-                __vtg_set_pixel_zb(x0 + i, y0 + 1, depth);
+                if(x0 + i >= 0 && x0 + i < VTG_SCREEN_WIDTH) {
+                    __vtg_set_pixel_zb(x0 + i, y0, depth);
+                    __vtg_set_pixel_zb(x0 + i, y0 + 1, depth);
+                }
             }
         }
         else {
             for(int i = 0; i < d + 1; i++) {
-                __vtg_set_pixel_zb(x0 + i, y0, depth);
-                __vtg_set_pixel_zb(x0 + i, y0 + 1, depth);
+                if(x0 + i >= 0 || x0 + i < VTG_SCREEN_WIDTH) {
+                    __vtg_set_pixel_zb(x0 + i, y0, depth);
+                    __vtg_set_pixel_zb(x0 + i, y0 + 1, depth);
+                }
             }
         }
             
@@ -363,6 +397,7 @@ void __vtg_draw_line (int x0, int y0, int x1, int y1, float depth) {
         }
     }
     else {
+        
         int dx = x1 - x0;
         int dy = y1 - y0;
 
@@ -383,6 +418,28 @@ void __vtg_draw_line (int x0, int y0, int x1, int y1, float depth) {
             __vtg_set_pixel_zb(x, y, depth);
         }
 
+    }
+}
+
+void __vtg_draw_line_hz (int x0, int x1, int y0, float depth) {
+    if(y0 < 0 || y0 >= VTG_SCREEN_HEIGHT)
+        return;
+    int d = x1 - x0;
+    if(d < 0) {
+        for(int i = 0; i > d - 1; i--) {
+            if(x0 + i >= 0 && x0 + i < VTG_SCREEN_WIDTH) {
+                __vtg_set_pixel_zb(x0 + i, y0, depth);
+                __vtg_set_pixel_zb(x0 + i, y0 + 1, depth);
+            }
+        }
+    }
+    else {
+        for(int i = 0; i < d + 1; i++) {
+            if(x0 + i >= 0 || x0 + i < VTG_SCREEN_WIDTH) {
+                __vtg_set_pixel_zb(x0 + i, y0, depth);
+                __vtg_set_pixel_zb(x0 + i, y0 + 1, depth);
+            }
+        }
     }
 }
 
@@ -425,9 +482,6 @@ void __vtg_translatePoints (Vector3 *points, int count, Vector3 translation) {
 
 
     for (int i = 0; i < count; i++) {
-        float px = points[i].x;
-        float py = points[i].y;
-        float pz = points[i].z;
 
         points[i].x += translation.x;
         points[i].y += translation.y;
@@ -447,9 +501,19 @@ void __vtg_drawEntityMesh (uint8_t mode, Entity *entity) {
     Vector3 *points = malloc(sizeof(Vector3) * entity->mesh->vertcount);
     memcpy(points, entity->mesh->verts, entity->mesh->vertcount * sizeof(Vector3));
 
+    // Mesh rotation
     __vtg_rotatePoints(points, entity->mesh->vertcount, entity->rotation);
 
+    // Mesh translation
     __vtg_translatePoints(points, entity->mesh->vertcount, entity->position);
+
+
+    // Camera translation
+    __vtg_translatePoints(points, entity->mesh->vertcount, (Vector3) { .x = -vtg_cameraPosition.x, .y = -vtg_cameraPosition.y, .z = -vtg_cameraPosition.z });
+
+    // Camera rotation
+    __vtg_rotatePoints(points, entity->mesh->vertcount, (Vector3) { .x = -vtg_cameraRotation.x, .y = -vtg_cameraRotation.y, .z = -vtg_cameraRotation.z });
+    
 
     int material_index = -1;
 
@@ -458,24 +522,32 @@ void __vtg_drawEntityMesh (uint8_t mode, Entity *entity) {
         Vector3 v1 = points[entity->mesh->vertindex[i * 3 + 1]];
         Vector3 v2 = points[entity->mesh->vertindex[i * 3 + 2]];
 
+        int x0 = 0, y0 = 0, x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+        
+        if(i == entity->mesh->materialindex[material_index + 1]) {
+            material_index++;
+        }
+        // TODO: better occlusion checks... some odd errors for large objects if this line does not exist
+        if(v0.z < 0 || v1.z < 0 || v2.z < 0)
+            continue;
+
+        int wts0 = __vtg_worldToScreen(&v0, &x0, &y0); 
+        int wts1 = __vtg_worldToScreen(&v1, &x1, &y1);
+        int wts2 = __vtg_worldToScreen(&v2, &x2, &y2);
+        if(wts0 && wts1 && wts2) {
+
+            continue;
+        }
+
+
         Vector3 vc = (Vector3) {
             .x = (v0.x + v1.x + v2.x)/3, (v0.y + v1.y + v2.y)/3, (v0.z + v1.z + v2.z)/3
         };
         float davg = sqrt(vc.x*vc.x + vc.y*vc.y + vc.z*vc.z);
 
-        int x0, y0, x1, y1, x2, y2;
-
-        __vtg_worldToScreen(&v0, &x0, &y0);
-        __vtg_worldToScreen(&v1, &x1, &y1);
-        __vtg_worldToScreen(&v2, &x2, &y2);
-
         y0 = VTG_SCREEN_HEIGHT - y0;
         y1 = VTG_SCREEN_HEIGHT - y1;
         y2 = VTG_SCREEN_HEIGHT - y2;
-
-        if(i == entity->mesh->materialindex[material_index + 1]) {
-            material_index++;
-        }
 
 
         if(shade) {
@@ -496,19 +568,6 @@ void __vtg_drawEntityMesh (uint8_t mode, Entity *entity) {
                 .g = api * entity->mesh->materials[material_index].color.g,
                 .b = api * entity->mesh->materials[material_index].color.b
             };
-            // TODO: set actual materials, this is only for tests
-            /*
-            if(material_index <= 0) {
-                __vtg_draw_color = (Color) {
-                    .r = api * 255, .g = api * 255, .b = api * 255
-                };
-            }
-            else {
-                __vtg_draw_color = (Color) {
-                    .r = api * 255, .g = api * 100, .b = api * 100
-                };
-            }
-            */
             
             // Fill triangle
             __vtg_fill_triangle(x0, y0, x1, y1, x2, y2, davg);

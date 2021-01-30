@@ -9,6 +9,8 @@
 #define OBJIMPORT_MAX_FACES         2048 // 1 face = 3 * 2 bytes = 6 bytes
 #define OBJIMPORT_MAX_MATERIALS     32
 
+Mesh *loaded_meshes[OBJIMPORT_MAX_MESHES];
+
 struct __tmp_obj {
     // Vertex position information
     Vector3 *vertices;
@@ -544,6 +546,13 @@ uint8_t objLoad (const char *path, Mesh *mesh) {
 
         memcpy(mesh->materials, temp_object.materials, sizeof(Material) * (temp_object.materialcount + 1));
 
+        for(int i = 0; i < 256; i++) {
+            if(loaded_meshes[i] == NULL) {
+                loaded_meshes[i] = mesh;
+                break;
+            }
+
+        }
     }
 
     // Free temporary object
@@ -555,6 +564,28 @@ uint8_t objLoad (const char *path, Mesh *mesh) {
 
     free(temp_object.uvvs);
     free(temp_object.uvindex);
+
+    
+
+    return 0;
+}
+
+uint8_t objUnload (Mesh *mesh) {
+    if(mesh == NULL)
+        return 1;
+
+    if(mesh->normalindex != NULL) {
+        free(mesh->normalindex);
+    } 
+    if(mesh->normals != NULL) {
+        free(mesh->normals);
+    }
+    if(mesh->vertindex != NULL) {
+        free(mesh->vertindex);
+    }
+    if(mesh->verts != NULL) {
+        free(mesh->verts);
+    }
 
     return 0;
 }
